@@ -1,0 +1,381 @@
+---
+title: "Interchangeability Al Mansour 5 Readers"
+author: "Johann Jacoby"
+date: "`r format(Sys.time(), format='%Y%m%d %H%M')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libsnfct, echo=FALSE, message=FALSE, warning=FALSE}
+### packages used here
+pkgs2use <- list(
+    c("readxl","1.3.1")
+  , c("geepack","1.3-2")
+  , c("multgee","1.8.0")
+  , c("boot","1.3-28")
+  , c("DescTools","0.99.44")
+  , c("vcd","1.4-8")
+  , c("ggplot2","3.3.5")
+  , c("rcompanion","2.4.1")
+)
+### install packages if needed and load them
+for (i in pkgs2use){
+  if (!require(i[1], character.only = TRUE)){install.packages(i[1], character.only=TRUE)}
+  library(i[1], character.only = TRUE)
+}
+```
+
+```{r settings, echo=FALSE}
+cilevel <- 95 # confidence level for cis (in percent)
+digr <- 4 # default rounding digit number
+digrkappa <- 2 # default rounding digit number for kappa/kendalls tau/W
+nboot <- 10000 # bootstrap resamples
+doboot <- TRUE # turn off bootstrapping by setting FALSE
+
+```
+
+```{r dataprep, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+filename <- "DL_Spine_interchangeability_Wirbelkörperebene_R1-R5.xlsx" # file name with extension without any path information, within quotes
+path <- "" # path to directory where <filename> resides, in quotes, without trailing slash, system specific slash hard coded
+setwd(path)
+
+rawd <- as.data.frame(read_excel(filename, sheet = 1))
+d<-rawd
+# streamline var names
+names(d) <- gsub("^Marrow","marrow", names(d))
+names(d) <- gsub("^foram_","foramen_", names(d))
+
+# recode variables with errors or too little variance for interchangeability analysis
+
+# recode Modic variables into dichotomous because of tiny numbers of Type 1 and Type 3 in sample
+sapply(grep("^Modic", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]==0,0,1)))
+# recode Pfirr variables, so that 0 and 1 are collapsed to category 0 and all others to 1, too few diagnostically positive cases
+sapply(grep("^Pfirr", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]>1,1,0)))
+# recode Schm variables, so that values of 2 (only 4 cases by Reader 4: 2 under TSE, 2 under DL) are coded as 1
+sapply(grep("^Schm_", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]>0,1,0)))
+# recode Flav variables, so that values of 2 (only 2 cases by Reader 4: 1 under TSE, 1 under DL) are coded as 1
+sapply(grep("^Flav_", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]>0,1,0)))
+# recode Facet variables, correct error value "2" to "0"
+sapply(grep("^Facet", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]==2,0,d[,x])))
+# recode foramen variables, so that cases = 0 are category 0 and all others (>0) are collapsed to 1, too few diagnostically positive cases
+sapply(grep("^foramen", names(d)), function(x) d[, x] <<- ifelse(is.na(d[,x]), NA, ifelse(d[,x]>0,1,0)))
+
+
+vars <- unique(sapply(names(d)[-1], function(x) strsplit(split="_", x)[[1]][1]))
+raters <- unique(sapply(names(d)[-1], function(x) strsplit(split="_", x)[[1]][3]))
+
+d$PatientID <- sapply(d$Patient, function(x) paste0(strsplit(split="_", x)[[1]][2:3], collapse=""))
+d$region <- sapply(d$Patient, function(x) strsplit(split="_", x)[[1]][2])
+d$PatientItem <- sapply(d$Patient, function(x) strsplit(split="_", x)[[1]][4])
+
+stacks <- list()
+
+for (v in vars){
+  for (r1 in 1:length(raters)){
+    for (r2 in 1:length(raters)){
+      if (r2 > r1) { # within standard method
+        stacks[[length(stacks)+1]] <- cbind(
+          d[,c("PatientID", "region", "PatientItem")]
+          , j1=d[,paste0(v,"_TSE_R",r1)], j2=d[,paste0(v,"_TSE_R",r2)]
+          , agree=as.numeric(ifelse(d[,paste0(v,"_TSE_R",r1)]==d[,paste0(v,"_TSE_R",r2)],1,0))
+          , agreeOrd=sapply(abs(d[,paste0(v,"_TSE_R",r1)]-d[,paste0(v,"_TSE_R",r2)]), function(x) ifelse(x == 0, 1, ifelse(x==1, .5, 0)))
+        , comp="TSEwithin", compclass="within", r1=r1, r2=r2, m1="TSE", m2="TSE", var=v
+        )
+      }
+      ## between methods for all rater pairs
+      stacks[[length(stacks)+1]] <- cbind(
+        d[,c("PatientID", "region", "PatientItem")]
+        , j1=d[,paste0(v,"_TSE_R",r1)], j2=d[,paste0(v,"_DL_R",r2)]
+        , agree=as.numeric(ifelse(d[,paste0(v,"_TSE_R",r1)]==d[,paste0(v,"_DL_R",r2)],1,0))
+        , agreeOrd=sapply(abs(d[,paste0(v,"_TSE_R",r1)]-d[,paste0(v,"_DL_R",r2)]), function(x) ifelse(x==0, 1, ifelse(x==1, .5, 0)))
+      , comp="TSE.DL", compclass="between", r1=r1, r2=r2, m1="TSE", m2="DL", var=v
+      )
+    }
+  }
+}
+LL<-do.call(rbind, stacks)
+LL$compclass.refwithin<-relevel(factor(LL$compclass, levels=c("between","within")), ref="within")
+LL$PatientID<-factor(LL$PatientID)
+LL<-LL[order(LL$PatientID),]
+
+dput(x=LL, file = "LLdat.dput")
+
+
+dlonglong <- reshape(d, direction="long", varying=2:ncol(d), timevar="variable", v.names="judgement", times=names(d)[2:ncol(d)])
+dlonglong[, c("parameter","method","reader")] <- do.call(rbind,sapply(dlonglong$variable, function(x) strsplit(split="_",x)))
+dlonglong$parameter <- factor(dlonglong$parameter, levels=vars, labels=vars)
+descplot<-ggplot(data=dlonglong, aes(x=as.numeric(judgement), fill=reader)) + geom_histogram(position="dodge") + facet_wrap(. ~ parameter, nrow = 2)
+descplot
+
+
+geeboot <- function(theData, w){
+  bssample <- theData[w,]
+  mm<-geeglm(agree ~ 1 + compclass.refwithin, id=PatientID, data=na.omit(bssample), family=binomial(link="logit"),corstr="exchangeable")$coefficients
+  unname((exp(mm[1]+mm[2]) / (1+exp(mm[1]+mm[2]))) - (exp(mm[1])/(1+exp(mm[1]))))
+}
+
+resulttbl <- as.data.frame(do.call(rbind, lapply(vars, function(v) {
+  cat(paste0("resulttbl",v))
+  dichvar <- ifelse(nrow(table(unname(unlist(d[,grep(paste0("^",v,".+"), names(d))])))) == 2,TRUE,FALSE)
+  datahere <- subset(LL, var==v)
+  datahere <- datahere[order(datahere$PatientID),]
+  intWN <- intB <- eff <- NA
+  if (dichvar) {
+    model <- geeglm(agree ~ compclass.refwithin, id=PatientID, data=datahere, family=binomial , corstr="exchangeable")
+    intWN <- (exp(model$coefficients[1])/(1 + exp(model$coefficients[1])))
+    intBW <- (exp(model$coefficients[1] + model$coefficients[2])/(1+exp(model$coefficients[1] + model$coefficients[2])))
+    if(doboot) { bo <- boot(data=datahere, R=nboot, statistic=geeboot, sim="ordinary") }
+  } else {
+    model <- ordLORgee(formula=agreeOrd ~ compclass.refwithin, id=PatientID, data=datahere, LORstr="uniform")
+    rvs <- c(1,.5,0)
+    res <- model$fitted.values[regData$method==0,][1,]
+    intWN <- res[1]*rvs[1]+res[2]*rvs[2]+res[3]**rvs[3]
+    res2 <- model$fitted.values[regData$method==1,][1,]
+    intBW <- res2[1]*rvs[1]+res2[2]*rvs[2]+res2[3]**rvs[3]
+    if (doboot) { bo <- boot(data=datahere, R=nboot, statistic=multgeeboot, parallel="snow") }
+  }
+  eff <- unname(intBW-intWN)
+  perc.bs.ci <- c(0,0)
+  if(doboot) { perc.bs.ci <- boot.ci(bo, type="perc")$percent[c(4,5)] }
+  
+ #calculate and prepare fleiss' kappas and cohen's kappas
+ dkar <- d[,grep(paste0(v, "_TSE"), names(d))]
+ dkrr <- d[,grep(paste0(v, "_(TSE|DL)"), names(d))]
+ dkra <- as.data.frame(apply(do.call(rbind, lapply(1:length(raters), function(x) as.matrix(cbind(d[, c(paste0(v,"_",c("TSE","DL"),"_R",x))])))),2,function(x) as.numeric(x)))
+
+ kappa.ar <- KappaM(x=dkar, method = "Fleiss", conf.level=cilevel/100)
+ kappa.rr <- KappaM(x=dkrr, method = "Fleiss", conf.level=cilevel/100)
+ kappa.ra <- Kappa(x=table(dkra), weights="Equal-Spacing")
+
+ individualkappas<-c()
+ individualkappa.cis<-c()
+   for (rr in 1:length(raters)){
+     subdata<-d[,grep(paste0(v, "_(TSE|DL)_R",rr), names(d))]
+     if(!all(dim(table(subdata))==2)) { 
+      individualkappas[rr] <- individualkappa.cis[rr] <- NA
+     } else {
+     assign(x=paste0("kappa.ra.",rr), value=Kappa(x=table(subdata), weights="Equal-Spacing"))
+     individualkappas[rr] <- get(paste0("kappa.ra.",rr))$Unweighted["value"]
+     if(!dichvar){individualkappas[rr] <- get(paste0("kappa.ra.",rr))$Weighted["value"]}
+     individualkappa.cis[rr] <- paste0("[",paste0(round(digits=digr, confint(get(paste0("kappa.ra.",rr)),level = cilevel/100)["Unweighted",]), collapse=";"),"]")
+     if (!dichvar) {
+       individualkappa.cis[rr] <- paste0("[",paste0(round(digits=digr, confint(get(paste0("kappa.ra.",rr)),level = cilevel/100)["Weighted",]), collapse=";"),"]")
+     }
+    }
+   }
+ kappa.ra.mean <- mean(individualkappas, na.rm=TRUE)
+
+   #prepare and calculate kendall's ws and kendall's taus
+   kendallw.ar <- kendallW(x=dkar, ci=TRUE, conf=cilevel/100)
+   kendallw.rr <- kendallW(x=dkrr, ci=TRUE, conf=cilevel/100)
+   kendalltaub.ra <- KendallTauB(table(dkra), conf.level=cilevel/100)
+   kendalltaub.rasp <- sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, kendalltaub.ra))
+   
+   # prepare and calculate findings table  
+casesz<-data.frame(do.call(rbind, lapply(names(d)[grep(paste0(v,"_TSE_R"), names(d))], function(x) cbind(d[, x], d[, gsub("TSE","DL",x)]))))
+tbz<-table(factor(levels=c("11","10","01","00"), apply(casesz, 1, function(x) paste0(ifelse(x[1]>0,1,0),ifelse(x[2]>0,1,0)))))
+casesb<-data.frame(
+    tse=apply(d[, grep(paste0(v,"_TSE_R"), names(d))], 1, function(y) ifelse(sum(y==1, na.rm=TRUE)>0,1,0))
+  , dl=apply(d[, grep(paste0(v,"_DL_R"), names(d))], 1, function(y) ifelse(sum(y==1, na.rm=TRUE)>0,1,0))
+)
+tb<-table(factor(levels=c("11","10","01","00"),apply(casesb, 1, function(x) paste0(x[1],x[2]))))
+ 
+  findings11z<-as.numeric(tbz["11"])
+  findings01z<-as.numeric(tbz["01"])
+  findings10z<-as.numeric(tbz["10"])
+  findings00z<-as.numeric(tbz["00"])
+  findingstotalz<-sum(findings11z,findings10z,findings01z)
+  findingsNz<-sum(findings11z,findings10z,findings01z,findings00z)
+  findingstotalzp<-(findingstotalz/findingsNz)*100
+  findings11z.p<-(findings11z/findingstotalz)*100
+  findings01z.p<-(findings01z/findingstotalz)*100
+  findings10z.p<-(findings10z/findingstotalz)*100
+  findings00z.p<-(findings00z/findingstotalz)*100
+  findingstestpz <- mcnemar.test(matrix(ncol=2, byrow=TRUE, c(findings11z,findings10z,findings01z,findings00z)))$p.value
+   
+  findings11<-as.numeric(tb["11"])
+  findings01<-as.numeric(tb["01"])
+  findings10<-as.numeric(tb["10"])
+  findings00<-as.numeric(tb["00"])
+  findingstotal<-sum(findings11,findings10,findings01, na.rm=TRUE)
+  findingsN<-sum(findings11,findings10,findings01,findings00, na.rm=TRUE)  
+  findingstotalp<-(findingstotal/findingsN)*100
+  findings11.p<-(findings11/findingstotal)*100
+  findings01.p<-(findings01/findingstotal)*100
+  findings10.p<-(findings10/findingstotal)*100
+  findings00.p<-(findings00/findingstotal)*100
+  findingstestp <- mcnemar.test(matrix(ncol=2, byrow=TRUE, c(findings11,findings10,findings01,findings00)))$p.value
+
+  ## draw everything in list to be rbinded into a large table with all results per variable
+list(
+    Variable=v
+    , bootstraps=nboot
+    , bootstrapdone=doboot
+    ### Intercepts = agreement proportion estimates
+    , InterceptWN=unname(intWN)
+    , InterceptBW=unname(intBW)
+    ### IEI & CIs
+    , IEI=eff
+    , IEI.text=sprintf(paste0("%.",digr,"f"), round(digits=digr,eff))
+    , CI.IEI.ll=perc.bs.ci[1]
+    , CI.IEI.ul=perc.bs.ci[2]
+    , CI.IEI.text=paste0("[",paste0(sprintf(paste0("%.",digr,"f"), round(digits=digr, perc.bs.ci)), collapse=";"),"]")
+    ### kappas
+    , kappa.ar.with.CI=
+     paste0(sprintf(paste0("%.",digrkappa,"f"), kappa.ar[1])," [",paste0(sprintf(paste0("%.",digrkappa,"f"),  round(digits=digrkappa, kappa.ar[c(2,3)])), collapse=";"),"]")
+    , kappa.rr.with.CI=
+      paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, kappa.rr[1]))," [",paste0(sprintf(paste0("%.",digrkappa,"f"),  round(digits=digrkappa, kappa.rr[c(2,3)])), collapse=";"),"]")
+    , kappa.ra.with.CI=
+        paste0(sprintf(paste0("%.",digrkappa, "f"), round(digits=digrkappa, kappa.ra$Unweighted["value"]))," [",paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, confint(kappa.ra)["Unweighted",])), collapse=";"),"]")
+    ### Kendall W / tau
+    , kendallsw.intraprotocol.interreader = sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.ar[1])))
+    , kendallsw.intraprotocol.interreader.with.CI = paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.ar[1])))," [",paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.ar[2:3]))), collapse=";"),"]")
+    , kendallsw.interprotocol.interreader = sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.rr[1])))
+    , kendallsw.interprotocol.interreader.with.CI = paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.rr[1])))," [",paste0(sprintf(paste0("%.",digrkappa,"f"), round(digits=digrkappa, as.numeric(kendallw.rr[2:3]))), collapse=";"),"]")
+    , kendallsw.interprotocol.intrareader.with.CI = paste0(kendalltaub.rasp[1]," [", kendalltaub.rasp[2], ";", kendalltaub.rasp[3], "]")
+    ### findings
+    , findings11z=findings11z
+    , findings01z=findings01z
+    , findings10z=findings10z
+    , findings00z=findings00z
+    , findingstotalz=findingstotalz
+    , findingstotalzp=findingstotalzp
+    , findingsNz=findingsNz
+    , findings11z.p=findings11z.p
+    , findings01z.p=findings01z.p
+    , findings10z.p=findings10z.p
+    , findings00z.p=findings00z.p
+    , findings11=findings11
+    , findings01=findings01
+    , findings10=findings10
+    , findings00=findings00
+    , findingstotal=findingstotal
+    , findingstotalp=findingstotalp
+    , findingsN=findingsN
+    , findings11.p=findings11.p
+    , findings01.p=findings01.p
+    , findings10.p=findings10.p
+    , findings00.p=findings00.p
+    , findingstestp=findingstestp
+    , findingstestpz=findingstestpz
+)
+})))
+
+row.names(resulttbl) <- unlist(resulttbl$Variable)
+resulttbl<- resulttbl[unlist(unname(sapply(vars, function(x) if(x %in% row.names(resulttbl)) {x} ))),]
+
+
+write.table(apply(resulttbl, 2, function(x) as.character(x)), file = paste0(format(Sys.time(), format="%Y%m%d.%H%M%S"),"_resulttable.tsv"), sep = "\t", row.names = TRUE, quote=FALSE)
+
+
+#prepare table for exchangeability indices
+resulttblprintnamesiei <- list(
+  Variable="Variable"
+  , InterceptWN="Agreements TSL~TSL"
+  , InterceptBW="Agreements TSL~DL"
+  , IEI.text="IEI"
+  , CI.IEI.text=paste0(cilevel,"%CI Bootstrapped Percentile of IEI")
+)
+
+#prepare table kappas/kendalls w and tau
+resulttblprintnameskappa <- list(
+    kappa.ar.with.CI="Fleiss' &kappa; Intra method Inter reader"
+  , kappa.rr.with.CI="Fleiss' &kappa; Inter method Inter reader"
+  , kappa.ra.with.CI="Cohen's &kappa; Inter method Intra reader"
+  , kendallsw.intraprotocol.interreader.with.CI="Kendall's W Intra method Inter reader"
+  , kendallsw.interprotocol.interreader.with.CI="Kendall's W Inter method Inter reader"  
+  , kendallsw.interprotocol.intrareader.with.CI="Kendall's &tau; Inter method Intra reader"  
+)
+
+
+resulttblprintnamesfindingsz <- list(
+    findingsNz="N"
+  , findingstotalz="Total number of findings"
+  , findingstotalzp="Total number of findings % "  
+  , findings11z="Findings both methods"
+  , findings11z.p="Findings both methods %"
+  , findings10z="Findings by standard method TSE, but not DL"
+  , findings10z.p="Findings TSE, not DL %"
+  , findings01z="Findings by new method DL, but not TSE"
+  , findings01z.p="Findings DL, not TSE %"
+  , findingstestpz="p (McNemar test)"
+)
+
+
+resulttblprintnamesfindings <- list(
+    findingsN="N"
+  , findingstotal="Total number of findings"
+  , findingstotalp="Total number of findings %"  
+  , findings11="Findings both methods"
+  , findings11.p="Findings both methods %"
+  , findings10="Findings by standard method TSE, but not DL"
+  , findings10.p="Findings TSE, not DL %"
+  , findings01="Findings by new method DL, but not TSE"
+  , findings01.p="Findings DL, not TSE %"
+  , findingstestp="p (McNemar test)"
+)
+
+
+resulttblprintiei <- resulttbl[,names(resulttblprintnamesiei)]
+resulttblprintkappa <- resulttbl[,names(resulttblprintnameskappa)]
+resulttblprintfindingsz <- resulttbl[,names(resulttblprintnamesfindingsz)]
+resulttblprintfindings <- resulttbl[,names(resulttblprintnamesfindings)]
+
+names(resulttblprintiei) <- sapply(names(resulttblprintiei), function(x) resulttblprintnamesiei[[x]])
+names(resulttblprintkappa) <- sapply(names(resulttblprintkappa), function(x) resulttblprintnameskappa[[x]])
+names(resulttblprintfindingsz) <- sapply(names(resulttblprintfindingsz), function(x) resulttblprintnamesfindingsz[[x]])
+names(resulttblprintfindings) <- sapply(names(resulttblprintfindings), function(x) resulttblprintnamesfindings[[x]])
+
+sapply(c(3,5,7,9), function(x) {
+  resulttblprintfindingsz[,x] <<- sprintf(paste0("%.",digr,"f"), round(digits=digr, as.numeric(resulttblprintfindingsz[,x])))
+  resulttblprintfindings[,x] <<- sprintf(paste0("%.",digr,"f"), round(digits=digr, as.numeric(resulttblprintfindings[,x])))
+})
+
+
+
+```  
+
+# Table Exchangeability Index  
+
+`r knitr::kable(resulttblprintiei)`
+CIs are percentile-based bootstrapped (`r sprintf("%.0f", nboot)` resamples).
+
+
+# Table Agreements  
+
+This table contains various inter/intra method and inter/intra reader agreement statistics.  
+
+**Intramethod interreader agreement and intermethod interreader agreement**  
+Fleiss' &kappa; (with `r length(raters)` readers) and Kendall's w.
+
+
+**Intermethod intrareader agreements** 
+Cohen's &kappa; and Kendall's &tau; for simple method agreement TSE vs. DL (with pairs of judgements of individual readers stacked as if they were independent)
+
+`r knitr::kable(resulttblprintkappa)`
+
+# Table Findings  
+
+## as in Zanchi et al., 2020: every rating pair (TSE~DL) is a case (5 judgements per vertebra)  
+
+Finding in TSE: if one reader rated present in 1 vertebra in TSE  
+Finding in DL: if one reader rated present in 1 vertebra in DL  
+5 Rating pairs per vertebra (1 per reader)
+
+`r knitr::kable(resulttblprintfindingsz, digits=2)`  
+
+
+## alternative: at least one reader (two judgments per vertebra: TSE and DL, readers combined within TSE & within DL)
+
+Finding in TSE: when at least one reader rated present per vertebra in all TSE ratings  
+Finding in DL: when at least one reader rated present per vertebra in all DL ratings  
+1 Rating pair per vertebra (finding using TSE - finding using DL)  
+
+`r knitr::kable(resulttblprintfindings, digits=2)`  
