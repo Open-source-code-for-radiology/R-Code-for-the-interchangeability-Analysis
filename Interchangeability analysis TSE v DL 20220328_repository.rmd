@@ -363,13 +363,7 @@ Cohen's &kappa; and Kendall's &tau; for simple method agreement TSE vs. DL (with
 
 # Table Findings  
 
-## as in Zanchi et al., 2020: every rating pair (TSE~DL) is a case (5 judgements per vertebra)  
 
-Finding in TSE: if one reader rated present in 1 vertebra in TSE  
-Finding in DL: if one reader rated present in 1 vertebra in DL  
-5 Rating pairs per vertebra (1 per reader)
-
-`r knitr::kable(resulttblprintfindingsz, digits=2)`  
 
 
 ## alternative: at least one reader (two judgments per vertebra: TSE and DL, readers combined within TSE & within DL)
